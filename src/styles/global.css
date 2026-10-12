@@ -10,6 +10,7 @@
 @import "./all/siterunner.css";
 @import "./all/appstore.css";
 @import "./all/injector.css";
+@import "./all/chat.css";
 @import "tailwindcss";
 
 @font-face {
