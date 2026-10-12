@@ -12,11 +12,15 @@ function customDevServer() {
         hooks: {
             'astro:server:setup': ({ server }) => {
 
-                server.httpServer.on('upgrade', (req, socket, head) => {
-                    if (req.url.startsWith("/wisp/")) {
-                        wisp.routeRequest(req, socket, head);
-                    }
-                });
+                // httpServer can be null when Astro re-runs this hook during a
+                // config reload (e.g. package.json changed), so guard it.
+                if (server.httpServer) {
+                    server.httpServer.on('upgrade', (req, socket, head) => {
+                        if (req.url.startsWith("/wisp/")) {
+                            wisp.routeRequest(req, socket, head);
+                        }
+                    });
+                }
 
                 server.middlewares.use((req, res, next) => {
                     res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
