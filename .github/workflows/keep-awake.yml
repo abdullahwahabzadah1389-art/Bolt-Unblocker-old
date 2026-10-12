@@ -1,0 +1,36 @@
+name: Keep Render awake
+
+# Render's free tier spins the service down after 15 minutes with no inbound
+# traffic, so the next visitor waits ~60s for the cold start. This cron hits
+# the site every 10 min (under Render's 15-min idle threshold) to keep the
+# instance warm and to wake it if it has already spun down.
+#
+# The app also self-pings once it is running (see SELF_PING_URL in app.js),
+# which prevents spin-down while the process is alive. This workflow is the
+# complementary half: it can wake an instance that has already slept, which a
+# self-ping cannot do because nothing is running to send it.
+#
+# NOTE: GitHub disables scheduled workflows after ~60 days of repo inactivity.
+# If this stops firing, nudge it by re-running the workflow manually, or point
+# a free uptime monitor (e.g. UptimeRobot) at PROD_URL instead.
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+env:
+  # Production origin (from the deployed Render service). Update if the domain changes.
+  PROD_URL: https://bolt-unblocker-6ee1.onrender.com
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Hit /healthz to keep the instance warm
+        run: |
+          echo "Pinging $PROD_URL/healthz ..."
+          curl -fsS --max-time 45 "$PROD_URL/healthz" \
+            || curl -fsS --max-time 45 "$PROD_URL/" \
+            || echo "::warning::Site did not respond — it may still be waking up."
+          echo " done."
