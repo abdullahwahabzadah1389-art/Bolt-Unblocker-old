@@ -56,11 +56,64 @@ self.addEventListener("message", ({ data }) => {
     }
 });
 
-// No host bypasses the rewriter. A raw pass-through for *.cdninstagram.com was
-// removed here: handing back un-rewritten CDN scripts left the document unable
-// to accept them (CORS), so Instagram hung forever on its splash logo. Every
-// request — Instagram included — now goes through Scramjet's normal rewrite.
+// ── Targeted raw pass-through for Instagram script assets ────────────────────
+//
+// Scope is deliberately SCRIPT PAYLOADS ONLY. The HTML document is never
+// passed through raw: if it were, Scramjet would have nothing to rewrite and
+// the proxy would stop containerizing the page entirely. That is also why the
+// earlier blanket `*.cdninstagram.com` host bypass was pulled back in — a host
+// rule cannot tell a script bundle from a document.
+//
+// Set to false to disable in one edit.
+const RAW_BYPASS_ENABLED = true;
+
+// Anchored on purpose: `cdninstagram.com.evil.com` must not match.
+const RAW_HOST_RE = /^(?:[a-z0-9-]+\.)*cdninstagram\.com$/i;
+const IG_HOST_RE = /^(?:[a-z0-9-]+\.)*instagram\.com$/i;
+// Instagram ships its modules through /rsrc.php/* and plain .js paths.
+const IG_SCRIPT_RE = /\/rsrc\.php(?:\/|$)|\.m?js$/i;
+
+function isRawBypassTarget(url) {
+    if (!RAW_BYPASS_ENABLED) return false;
+    if (RAW_HOST_RE.test(url.hostname)) return true;
+    if (IG_HOST_RE.test(url.hostname)) return IG_SCRIPT_RE.test(url.pathname);
+    return false;
+}
+
+function respondRaw(e, target) {
+    // A plain fetch inside a service worker does not re-enter this fetch
+    // handler, so this is a genuine direct request rather than a rewritten one.
+    e.response = fetch(target.href).then((upstream) => {
+        const rawHeaders = Object.fromEntries(upstream.headers.entries());
+        const out = new Response(upstream.body, {
+            status: upstream.status,
+            statusText: upstream.statusText,
+            headers: upstream.headers,
+        });
+        out.rawHeaders = rawHeaders;
+        out.rawResponse = {
+            body: out.body,
+            headers: rawHeaders,
+            status: upstream.status,
+            statusText: upstream.statusText,
+        };
+        out.finalURL = target.href;
+        return out;
+    });
+}
+
 scramjet.addEventListener("request", (e) => {
+    let target = null;
+    try {
+        target = new URL(e.url.href);
+    } catch {
+        target = null;
+    }
+    if (target && isRawBypassTarget(target)) {
+        respondRaw(e, target);
+        return;
+    }
+
     if (playgroundData && e.url.href.startsWith(playgroundData.origin)) {
         const headers = {};
         const origin = playgroundData.origin;
