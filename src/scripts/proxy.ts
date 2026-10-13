@@ -66,6 +66,10 @@ const scramjet = new ScramjetController({
     // window.crypto or crypto.subtle (there is no crypto hook module), so no
     // encryption shim is needed or appropriate here. These flags only reduce
     // the rewriter's own instrumentation on the page.
+    // `strictRewrites: false` is the "disable strict string tampering" switch:
+    // Scramjet's ScramjetFlags type exposes exactly 12 keys and there is no
+    // `shieldCrypto` flag in this build (0 hits in scramjet.all.js or types/),
+    // so setting one would be a type error with no runtime effect.
     siteFlags: {
         '^https?://([a-z0-9-]+\\.)?instagram\\.com(/|$)': {
             sourcemaps: false,

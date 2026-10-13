@@ -431,5 +431,20 @@ import Layout from "../Layouts/Layout.astro";
         </div>
 
         <script src="../scripts/settings.ts"></script>
+
+        <!-- Google returns its automated-403 page when the OAuth flow runs inside
+             the proxy's iframe, so this hop must leave the proxy entirely. -->
+        <script>
+            document
+                .getElementById("google-signin")
+                ?.addEventListener("click", (e) => {
+                    e.preventDefault();
+                    window.open(
+                        "/auth/google",
+                        "_blank",
+                        "noopener,noreferrer",
+                    );
+                });
+        </script>
     </main>
 </Layout>
