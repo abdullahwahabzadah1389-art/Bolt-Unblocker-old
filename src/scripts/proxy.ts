@@ -7,17 +7,16 @@ import { BareMuxConnection } from '@mercuryworkshop/bare-mux';
 // (and similar) throttle. Point it at a public relay to change the exit IP.
 //
 // Relay pool, measured 2026-10-13 (raw TLS+WS handshake, 5 attempts each):
-//   wss://my-private-relay.up.railway.app/  404 on every path  <- preferred, NOT YET MOUNTED
+//   wss://private-wisp-server-production.up.railway.app/  5/5  101  avg 222ms  <- preferred
 //   wss://wisp.freewisp.org/     5/5  101  avg  749ms
 //   wss://wisp.mercurywork.shop/ 5/5  101  avg  966ms
 //   wss://anura.pro/             5/5  101  avg 1445ms  (922-3454ms, jittery)
 //
-// The private node RESOLVES (69.46.46.111) and the Railway app is running, but
-// it returns `404 Not Found` for /, /wisp/, /ws/, /socket and /bare/ — no wisp
-// service is mounted yet. probeRelay() therefore rejects it (a failed WS
-// handshake fires `error` -> `close` -> null) and the pool falls through to the
-// public nodes automatically. The moment a wisp server is mounted on that host,
-// it starts winning without any further change here.
+// The private node is our own wisp deployment (69.46.46.53) running index.js
+// from wisp-backend/: GET /health returns 200 `ok`, GET / returns 404, and a WS
+// upgrade on / returns 101. It also happens to be the fastest node in the pool,
+// though selection is by rank rather than speed, so it stays preferred even if
+// its latency degrades later.
 //
 // Verified DEAD, deliberately NOT in the pool:
 //   wisp.coia.wtf                ENOTFOUND (NXDOMAIN — the name does not exist)
@@ -39,7 +38,7 @@ const DEFAULT_WISP = "wss://wisp.freewisp.org/";
 // traffic exits from a dedicated IP rather than a shared public relay pool.
 // Kept as a separate constant so it can be pointed at a new host without
 // editing the ordering below.
-const PRIVATE_WISP = "wss://my-private-relay.up.railway.app/";
+const PRIVATE_WISP = "wss://private-wisp-server-production.up.railway.app/";
 
 // ARRAY ORDER IS THE PREFERENCE RANKING. Index 0 wins whenever it answers;
 // later entries are fallbacks. Note this is deliberately NOT a latency sort —
