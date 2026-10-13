@@ -7,6 +7,7 @@ import { hostname } from "node:os";
 import { existsSync, statSync } from "node:fs";
 import { Readable } from "node:stream";
 import { server as wisp } from "@mercuryworkshop/wisp-js/server";
+import crypto from "node:crypto";
 
 
 
@@ -258,6 +259,151 @@ fastify.post("/api/deepreset", async (request, reply) => {
     return reply.status(200).send({ ok: true });
 });
 
+
+// ── Google OAuth2 ─────────────────────────────────────────────────────────────
+// Lives here rather than in src/pages/api/: astro.config.mjs has no adapter and
+// no `output` key, so `astro build` is fully static and emits no API routes at
+// all (there is no dist/api/). app.js is the production server (`node app.js`),
+// so route handlers that must actually run belong here.
+//
+// The client secret never leaves this process — the browser only ever holds the
+// single-use authorization code.
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
+// Must match a URI registered in the Google Cloud console, byte for byte.
+const GOOGLE_REDIRECT_URI =
+    process.env.GOOGLE_REDIRECT_URI || "https://sattricks.duckdns.org/auth/google/callback";
+const OAUTH_STATE_COOKIE = "bolt_gstate";
+const OAUTH_STATE_TTL_SECONDS = 600;
+
+const GOOGLE_AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
+// Note the host: `https://googleapis.com` (apex) does not serve the token
+// endpoint. The OAuth2 token endpoint is oauth2.googleapis.com.
+const GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
+
+function readCookieHeader(request, name) {
+    const raw = request.headers.cookie;
+    if (!raw) return null;
+    for (const part of raw.split(";")) {
+        const eq = part.indexOf("=");
+        if (eq < 0) continue;
+        if (part.slice(0, eq).trim() === name) {
+            return decodeURIComponent(part.slice(eq + 1).trim());
+        }
+    }
+    return null;
+}
+
+// Constant-time compare; lengths are checked first because timingSafeEqual
+// throws on a length mismatch, which would turn a CSRF probe into a 500.
+function safeEqual(a, b) {
+    if (typeof a !== "string" || typeof b !== "string") return false;
+    const ba = Buffer.from(a);
+    const bb = Buffer.from(b);
+    if (ba.length !== bb.length) return false;
+    return crypto.timingSafeEqual(ba, bb);
+}
+
+function oauthConfigMissing() {
+    if (GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET) return null;
+    const missing = [
+        !GOOGLE_CLIENT_ID && "GOOGLE_CLIENT_ID",
+        !GOOGLE_CLIENT_SECRET && "GOOGLE_CLIENT_SECRET",
+    ].filter(Boolean);
+    return missing.join(" and ");
+}
+
+/** Step 1 — bounce the browser to Google's consent screen. */
+fastify.get("/auth/google", (request, reply) => {
+    const missing = oauthConfigMissing();
+    if (missing) {
+        reply.header("Cache-Control", "no-store");
+        return reply
+            .status(500)
+            .type("text/html; charset=utf-8")
+            .send(`<meta charset="utf-8"><title>Sign-in unavailable</title>
+<p style="font:16px system-ui;padding:2rem">Google sign-in is not configured: missing <code>${escapeXml(missing)}</code>. Set it in the server environment.</p>`);
+    }
+
+    // Unpredictable per-attempt value, bound to this browser via an HttpOnly
+    // cookie, so a forged callback can't complete the flow (RFC 6749 §10.12).
+    const state = crypto.randomBytes(32).toString("base64url");
+
+    const params = new URLSearchParams({
+        client_id: GOOGLE_CLIENT_ID,
+        redirect_uri: GOOGLE_REDIRECT_URI,
+        response_type: "code",
+        scope: "openid profile email",
+        state,
+        prompt: "select_account",
+    });
+
+    reply.header(
+        "Set-Cookie",
+        `${OAUTH_STATE_COOKIE}=${encodeURIComponent(state)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${OAUTH_STATE_TTL_SECONDS}`,
+    );
+    reply.header("Cache-Control", "no-store");
+    reply.header("Location", `${GOOGLE_AUTH_ENDPOINT}?${params.toString()}`);
+    return reply.status(302).send();
+});
+
+/** Step 2 — trade the code for tokens, server-to-server, never via the client. */
+fastify.post("/api/auth/google/token", async (request, reply) => {
+    reply.header("Cache-Control", "no-store");
+
+    const missing = oauthConfigMissing();
+    if (missing) {
+        return reply.status(500).send({ error: "missing_env", detail: missing });
+    }
+
+    const body = request.body && typeof request.body === "object" ? request.body : {};
+    const code = typeof body.code === "string" ? body.code : "";
+    const state = typeof body.state === "string" ? body.state : "";
+
+    if (!code) return reply.status(400).send({ error: "missing_code" });
+    if (!state) return reply.status(400).send({ error: "missing_state" });
+
+    const expected = readCookieHeader(request, OAUTH_STATE_COOKIE);
+    // Distinguished on purpose: "no cookie" usually means third-party/cookie
+    // blocking or a cold-start mismatch, while "mismatch" means a forged or
+    // replayed state. Collapsing them into one code makes a broken deployment
+    // look like an attack.
+    if (!expected) {
+        return reply.status(400).send({ error: "state_cookie_missing" });
+    }
+    if (!safeEqual(expected, state)) {
+        return reply.status(400).send({ error: "state_mismatch" });
+    }
+
+    // Single-use: burn it whether or not the exchange succeeds.
+    reply.header(
+        "Set-Cookie",
+        `${OAUTH_STATE_COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`,
+    );
+
+    try {
+        const res = await fetch(GOOGLE_TOKEN_ENDPOINT, {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({
+                client_id: GOOGLE_CLIENT_ID,
+                client_secret: GOOGLE_CLIENT_SECRET,
+                code,
+                grant_type: "authorization_code",
+                redirect_uri: GOOGLE_REDIRECT_URI,
+            }).toString(),
+        });
+
+        const data = await res.json().catch(() => null);
+        if (!data) {
+            return reply.status(502).send({ error: "bad_token_response", status: res.status });
+        }
+        return reply.status(res.status).send(data);
+    } catch (err) {
+        request.log.error({ err }, "google token exchange failed");
+        return reply.status(502).send({ error: "token_exchange_failed" });
+    }
+});
 
 fastify.setNotFoundHandler((request, reply) => {
     return reply.send("404 Not Found");

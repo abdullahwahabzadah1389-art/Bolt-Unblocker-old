@@ -22,8 +22,14 @@ import Layout from "../../../Layouts/Layout.astro";
             type ProxyCookie,
         } from "../../../scripts/auth-breakout";
 
-        // Both query (?code=) and implicit-hash (#access_token=) flows are read,
-        // so whichever response type the Google client is configured for works.
+        const status = document.getElementById("bolt-auth-status");
+        const detail = document.getElementById("bolt-auth-detail");
+
+        const show = (s: string, d: string) => {
+            if (status) status.textContent = s;
+            if (detail) detail.textContent = d;
+        };
+
         const query = new URLSearchParams(window.location.search);
         const hash = new URLSearchParams(window.location.hash.slice(1));
         const pick = (key: string) => query.get(key) ?? hash.get(key);
@@ -34,42 +40,85 @@ import Layout from "../../../Layouts/Layout.astro";
             error: pick("error") ?? undefined,
         };
 
-        const status = document.getElementById("bolt-auth-status");
-        const detail = document.getElementById("bolt-auth-detail");
-
-        // Cookies that the flow actually handed back on this origin.
-        //
-        // Google's OAuth redirect returns an authorization code or access token
-        // — never the provider's session cookies (SID/HSID/__Secure-1PSID and
-        // friends are HttpOnly on *.google.com and are never echoed in a
-        // redirect URL). So for Google this is legitimately empty, and no
-        // amount of client code can populate it from these parameters.
-        //
-        // It is kept non-const so a first-party provider that *does* return
-        // cookie material can push it here and have it injected into the jar.
-        const cookies: ProxyCookie[] = [];
-
         void (async () => {
-            const injected = await injectProxyCookies(cookies);
-
-            if (status && detail) {
-                if (payload.error) {
-                    status.textContent = "Sign-in failed";
-                    detail.textContent = `Google returned: ${payload.error}`;
-                } else if (payload.code || payload.state) {
-                    status.textContent = "Authorization received";
-                    detail.textContent = injected
-                        ? `${injected} cookie(s) injected into the proxy jar.`
-                        : "No session cookies were present in the redirect — Google does not return them, so the proxied session stays signed out. This is expected.";
-                } else {
-                    status.textContent = "Nothing to complete";
-                    detail.textContent =
-                        "No authorization parameters were found in this URL.";
-                }
+            if (payload.error) {
+                show("Sign-in failed", `Google returned: ${payload.error}`);
+                deliverAuthReturn(payload);
+                return;
             }
 
-            // Handed back over the same-origin channel; fires regardless of the
-            // message above so callers can act on `code` / `error`.
+            if (!payload.code) {
+                show(
+                    "Nothing to complete",
+                    "No authorization parameters were found in this URL.",
+                );
+                deliverAuthReturn(payload);
+                return;
+            }
+
+            // The code is single-use and short-lived: keep it out of history so
+            // a later visitor to the back button can't replay it.
+            window.history.replaceState({}, "", window.location.pathname);
+
+            let tokens: Record<string, unknown>;
+            try {
+                // Same-origin POST. The server does the actual call to Google
+                // with client_secret — that secret never reaches this page.
+                const res = await fetch("/api/auth/google/token", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    credentials: "same-origin",
+                    body: JSON.stringify({
+                        code: payload.code,
+                        state: payload.state,
+                    }),
+                });
+                tokens = await res.json();
+                if (!res.ok || tokens.error) {
+                    const reason =
+                        typeof tokens.error === "string"
+                            ? tokens.error
+                            : `HTTP ${res.status}`;
+                    show("Token exchange failed", reason);
+                    deliverAuthReturn(payload);
+                    return;
+                }
+            } catch {
+                show(
+                    "Token exchange failed",
+                    "Could not reach the exchange endpoint.",
+                );
+                deliverAuthReturn(payload);
+                return;
+            }
+
+            // Step 3 — hand the verified token set to the proxy's cookie jar.
+            //
+            // Scramjet's worker only accepts `{ scramjet$type:"cookie", cookie,
+            // url }` (it calls `setCookies([e.cookie], new URL(e.url))`), so the
+            // flat {name, value} shape would throw on an undefined URL. The
+            // helper serialises to Set-Cookie form and — critically — waits for
+            // a controlling ServiceWorker (registering /sw.js first if the page
+            // has none), so a message posted on first load is not dropped.
+            const jar: ProxyCookie[] = [
+                {
+                    name: "G_AUTH_DATA",
+                    value: JSON.stringify(tokens),
+                    domain: ".google.com",
+                    path: "/",
+                    secure: true,
+                },
+            ];
+
+            const injected = await injectProxyCookies(jar);
+
+            show(
+                "Sign-in complete",
+                injected
+                    ? `${injected} credential record written to the proxy jar. Note: this carries Google's OAuth tokens (access_token / id_token) for API use — Google does not issue its site session cookies (SID, __Secure-1PSID) to this flow, so google.com itself still renders signed out.`
+                    : "No Service Worker controller was available, so the credential record was not written.",
+            );
+
             deliverAuthReturn(payload);
         })();
     </script>

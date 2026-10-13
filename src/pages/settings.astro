@@ -353,6 +353,62 @@ import Layout from "../Layouts/Layout.astro";
                     </div>
                 </div>
             </section>
+
+            <!-- Account Section -->
+            <section class="settings-section" data-section="account">
+                <div class="section-header">
+                    <div class="section-icon">
+                        <svg
+                            width="24"
+                            height="24"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            xmlns="http://www.w3.org/2000/svg"
+                        >
+                            <path
+                                d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"
+                                stroke="currentColor"
+                                stroke-width="2"
+                                stroke-linecap="round"
+                                stroke-linejoin="round"></path>
+                            <circle
+                                cx="12"
+                                cy="7"
+                                r="4"
+                                stroke="currentColor"
+                                stroke-width="2"
+                                stroke-linecap="round"
+                                stroke-linejoin="round"></circle>
+                        </svg>
+                    </div>
+                    <div class="section-title-group">
+                        <h2 class="section-title">Account</h2>
+                        <p class="section-description">
+                            Connect a Google account to Bolt
+                        </p>
+                    </div>
+                </div>
+                <div class="section-body">
+                    <div class="setting-item">
+                        <div class="setting-info">
+                            <span class="setting-label">Google Account</span>
+                            <span class="setting-hint"
+                                >Runs the OAuth flow on our own origin — the
+                                client secret stays on the server</span
+                            >
+                        </div>
+                        <!-- noopener,noreferrer is mandated so the proxy origin
+                             is never leaked in a Referer on this hop. -->
+                        <a
+                            id="google-signin"
+                            class="setting-button"
+                            href="/auth/google"
+                            rel="noopener,noreferrer"
+                            >Sign in with Google</a
+                        >
+                    </div>
+                </div>
+            </section>
         </div>
 
         <!-- Save Toast -->
