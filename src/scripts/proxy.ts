@@ -80,21 +80,35 @@ const scramjet = new ScramjetController({
     // Likewise no crypto shim: neither Scramjet nor Ultraviolet defines a
     // window.crypto / crypto.subtle hook, so these flags only tune the
     // rewriter's own instrumentation on the page.
+    // `allowInvalidJs: true` is a real flag, resolved per-request by the
+    // engine's flag lookup: when its JS rewriter throws on a script it cannot
+    // parse, it returns the ORIGINAL upstream bytes instead of aborting, so the
+    // script still loads and runs as authored.
+    //
+    // It is also the engine default, so on its own this changes no behaviour —
+    // it pins the value per-host, which matters because our global `flags` above
+    // sets only 4 of the 12 keys and the runtime `modifyConfig` API merges
+    // shallowly (Object.assign({}, $W, e)); either path could otherwise drop it.
     siteFlags: {
         '^https?://([a-z0-9-]+\\.)?google\\.com(/|$)': {
             sourcemaps: false,
             captureErrors: false,
             strictRewrites: false,
+            allowInvalidJs: true,
         },
         '^https?://([a-z0-9-]+\\.)?instagram\\.com(/|$)': {
             sourcemaps: false,
             captureErrors: false,
             strictRewrites: false,
+            allowInvalidJs: true,
         },
         '^https?://([a-z0-9-]+\\.)?cdninstagram\\.com(/|$)': {
             sourcemaps: false,
             captureErrors: false,
             strictRewrites: false,
+            // Instagram's script bundles are served from *.cdninstagram.com, so
+            // this is the rule that actually governs the rewriter here.
+            allowInvalidJs: true,
         },
     },
     prefix: '/$/'
