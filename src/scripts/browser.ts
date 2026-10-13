@@ -1,4 +1,5 @@
 import dummyProxy, { swReady } from "./encoding";
+import { breakOutIfAuthUrl, wireAuthBreakoutClicks } from "./auth-breakout";
 
 // --- Site Alert Logic ---
 let siteAlerts: any[] = [];
@@ -135,6 +136,10 @@ class Tab {
         if (!this.iframe) {
             this.iframe = document.createElement('iframe');
 
+            // Intercept auth link clicks inside the proxied document before the
+            // proxy can wrap them — re-attached on every frame load.
+            wireAuthBreakoutClicks(this.iframe, (href) => dummyProxy.decodeProxiedUrl(href));
+
             this.iframe.src = this.getResolvedUrl();
         } else {
             try {
@@ -201,14 +206,22 @@ class TabManager {
                 if (addressInput.value.startsWith('bolt://')) {
                     destinationUrl = addressInput.value;
                     finalUrl = destinationUrl;
-                } else if (addressInput.value.startsWith('https://') || addressInput.value.startsWith('http://')) {
-                    destinationUrl = addressInput.value;
-                    finalUrl = dummyProxy.encodeUrl(destinationUrl);
-                } else if (addressInput.value.includes('.') && !addressInput.value.includes(' ')) {
-                    destinationUrl = 'https://' + addressInput.value;
-                    finalUrl = dummyProxy.encodeUrl(destinationUrl);
                 } else {
-                    destinationUrl = searchEngineUrl + addressInput.value;
+                    if (addressInput.value.startsWith('https://') || addressInput.value.startsWith('http://')) {
+                        destinationUrl = addressInput.value;
+                    } else if (addressInput.value.includes('.') && !addressInput.value.includes(' ')) {
+                        destinationUrl = 'https://' + addressInput.value;
+                    } else {
+                        destinationUrl = searchEngineUrl + addressInput.value;
+                    }
+
+                    // Intercept before the proxy prefix is applied: auth hops
+                    // open natively so Google never sees a rewritten document.
+                    if (breakOutIfAuthUrl(destinationUrl)) {
+                        addressInput.value = '';
+                        return;
+                    }
+
                     finalUrl = dummyProxy.encodeUrl(destinationUrl);
                 }
 
@@ -592,8 +605,14 @@ newTabBtn?.addEventListener('click', () => {
 
 // 3. Add a starting tab
 swReady.then(() => {
-    const initialDestination = url ? (url.startsWith('bolt://') ? url : dummyProxy.encodeUrl(url)) : ('bolt://newtab');
-    myBrowser.addTab('Loading...', initialDestination);
+    // Google sign-in / OAuth cannot run inside the proxied iframe, so those
+    // destinations are handed to the browser as a native tab instead.
+    if (url && !url.startsWith('bolt://') && breakOutIfAuthUrl(url)) {
+        myBrowser.addTab('Loading...', 'bolt://newtab');
+    } else {
+        const initialDestination = url ? (url.startsWith('bolt://') ? url : dummyProxy.encodeUrl(url)) : ('bolt://newtab');
+        myBrowser.addTab('Loading...', initialDestination);
+    }
 });
 
 //4. Global Functions
@@ -609,6 +628,12 @@ function navigateTo(url: string) {
         newUrl = 'https://' + url;
     } else {
         newUrl = searchEngineUrl + url;
+    }
+
+    // Funnel for new-tab shortcuts, in-page navigation messages and any
+    // caller using window.navigateTo — same breakout rule as the address bar.
+    if (breakOutIfAuthUrl(newUrl)) {
+        return;
     }
 
     myBrowser.updateActiveTabUrl(dummyProxy.encodeUrl(newUrl));
