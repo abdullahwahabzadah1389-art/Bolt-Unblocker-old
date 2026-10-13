@@ -60,17 +60,32 @@ const scramjet = new ScramjetController({
         sourcemaps: true,
     },
     // Per-site rewriter overrides — keyed by RegExp matched against the target
-    // href. Instagram gets the lightest-touch profile the engine offers.
+    // href. Values are Partial<ScramjetFlags>, whose complete key set is:
+    //   serviceworkers, syncxhr, strictRewrites, rewriterLogs, captureErrors,
+    //   cleanErrors, scramitize, sourcemaps, destructureRewrites,
+    //   interceptDownloads, allowInvalidJs, allowFailedIntercepts
     //
-    // Note what this is NOT: neither Scramjet nor Ultraviolet wraps
-    // window.crypto or crypto.subtle (there is no crypto hook module), so no
-    // encryption shim is needed or appropriate here. These flags only reduce
-    // the rewriter's own instrumentation on the page.
-    // `strictRewrites: false` is the "disable strict string tampering" switch:
-    // Scramjet's ScramjetFlags type exposes exactly 12 keys and there is no
-    // `shieldCrypto` flag in this build (0 hits in scramjet.all.js or types/),
-    // so setting one would be a type error with no runtime effect.
+    // `strictRewrites: false` is the "disable strict string tampering" switch,
+    // so it is what keeps normal routing while relaxing rewrite strictness.
+    //
+    // `shieldCrypto` and `masquerade` are intentionally NOT set. The engine
+    // resolves a flag with `e in n` where `e` is a name IT asks for, and both
+    // strings occur zero times in scramjet.all.js — they would be read by
+    // nothing while looking like protection. Note tsc does NOT catch this: the
+    // controller comes off an untyped ternary, so excess keys pass silently.
+    // "DOM Masquerading" is an InvisiProxy LTS feature (disguiseFiles), not a
+    // Scramjet flag — InvisiProxy is a separate proxy service that bundles
+    // Scramjet and Ultraviolet rather than a superset of their flag set.
+    //
+    // Likewise no crypto shim: neither Scramjet nor Ultraviolet defines a
+    // window.crypto / crypto.subtle hook, so these flags only tune the
+    // rewriter's own instrumentation on the page.
     siteFlags: {
+        '^https?://([a-z0-9-]+\\.)?google\\.com(/|$)': {
+            sourcemaps: false,
+            captureErrors: false,
+            strictRewrites: false,
+        },
         '^https?://([a-z0-9-]+\\.)?instagram\\.com(/|$)': {
             sourcemaps: false,
             captureErrors: false,
