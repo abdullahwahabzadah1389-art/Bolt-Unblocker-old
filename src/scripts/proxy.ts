@@ -6,31 +6,120 @@ import { BareMuxConnection } from '@mercuryworkshop/bare-mux';
 // local /wisp/ means all traffic exits from Render's datacenter IP, which Meta
 // (and similar) throttle. Point it at a public relay to change the exit IP.
 //
-// Endpoints checked 2026-10-13 (WS handshake, 5 attempts each):
-//   wss://wisp.freewisp.org/     5/5  101  <- current default
-//   wss://wisp.mercurywork.shop/ 5/5  101  (retired; rate-limited demo node)
-//   wss://anura.pro/               1    101
-//   wss://wisp.rhw.one/            fail 35 (SSL connect error)
-//   nebulaproxy.io/wisp/           fail    timeout
-//   wisp.pydust.cloud / wisp.coia.wtf      NXDOMAIN (do not exist)
+// Relay pool, measured 2026-10-13 (raw TLS+WS handshake, 5 attempts each):
+//   wss://wisp.freewisp.org/     5/5  101  avg  749ms  <- preferred
+//   wss://wisp.mercurywork.shop/ 5/5  101  avg  966ms
+//   wss://anura.pro/             5/5  101  avg 1445ms  (922-3454ms, jittery)
+//
+// Verified DEAD, deliberately NOT in the pool:
+//   wisp.coia.wtf                ENOTFOUND (NXDOMAIN — the name does not exist)
+//   wisp.rhw.one                 ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR
+//   nebulaproxy.io/wisp/         timeout on all 5 attempts
+//   wisp.pydust.cloud            NXDOMAIN
+//
+// Note the measurement method matters: Node's fetch() refuses the Connection /
+// Upgrade headers (UND_ERR_INVALID_ARG), so a fetch-based probe reports a false
+// negative for every endpoint. probeRelay() below uses a real WebSocket instead.
 //
 // Override at runtime with:  localStorage.setItem('wisp-endpoint', 'wss://…')
-// Revert to default:         localStorage.removeItem('wisp-endpoint')
+// Revert to pool selection: localStorage.removeItem('wisp-endpoint')
 const WISP_ENDPOINT_KEY = "wisp-endpoint";
 const ACTIVE_WISP_KEY = "wisp-active-endpoint";
 const DEFAULT_WISP = "wss://wisp.freewisp.org/";
 
-function resolveWispUrl(): string {
-    const stored = localStorage.getItem(WISP_ENDPOINT_KEY);
-    if (stored) return stored;
+// Only endpoints that answered 101 in the measurement above. Order is the
+// preference order used when nothing healthier is already active.
+const RELAY_POOL: readonly string[] = [
+    DEFAULT_WISP,
+    "wss://wisp.mercurywork.shop/",
+    "wss://anura.pro/",
+];
+
+// A relay that has not answered within this window is treated as down.
+const WISP_PROBE_TIMEOUT_MS = 3000;
+
+/**
+ * Opens a real WebSocket to the relay and resolves with its connection latency
+ * in ms, or null if it could not be reached (error, early close, or timeout).
+ *
+ * The socket is closed as soon as it is known to be healthy — the probe is a
+ * health check, not a session, and must not hold a slot on a node that caps
+ * concurrent connections.
+ */
+function probeRelay(url: string, timeoutMs = WISP_PROBE_TIMEOUT_MS): Promise<number | null> {
+    return new Promise((resolve) => {
+        const started = performance.now();
+        let settled = false;
+        let socket: WebSocket | null = null;
+
+        const finish = (ok: boolean) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            if (socket) {
+                try {
+                    socket.close();
+                } catch {
+                    /* already closed */
+                }
+            }
+            resolve(ok ? performance.now() - started : null);
+        };
+
+        const timer = setTimeout(() => finish(false), timeoutMs);
+
+        try {
+            socket = new WebSocket(url);
+        } catch {
+            // Malformed URL or no network at all.
+            finish(false);
+            return;
+        }
+
+        socket.addEventListener("open", () => finish(true));
+        socket.addEventListener("error", () => finish(false));
+        // Fires if the server accepts then drops us before we read `open`.
+        socket.addEventListener("close", () => finish(false));
+    });
+}
+
+/**
+ * Picks the relay for this page load.
+ *
+ * Stability is preferred over raw speed: if the relay used last time is still
+ * healthy we keep it, so an in-flight session does not silently change exit IP
+ * between navigations. Only when it is gone do we re-measure the pool and take
+ * the fastest surviving node.
+ */
+async function selectRelay(): Promise<string> {
+    // An explicit override is the operator's decision — never probe it away.
+    const override = localStorage.getItem(WISP_ENDPOINT_KEY);
+    if (override) return override;
+
     // A wss:// endpoint is unreachable from an insecure origin.
     if (location.protocol === "http:") {
         return "ws://" + location.host + "/wisp/";
     }
+
+    const stored = localStorage.getItem(ACTIVE_WISP_KEY);
+    if (stored && RELAY_POOL.includes(stored)) {
+        if ((await probeRelay(stored)) !== null) return stored;
+    }
+
+    const results = await Promise.all(
+        RELAY_POOL.map(async (url) => ({ url, ms: await probeRelay(url) })),
+    );
+    const healthy = results
+        .filter((r): r is { url: string; ms: number } => r.ms !== null)
+        .sort((a, b) => a.ms - b.ms);
+
+    // Fastest healthy node wins.
+    if (healthy.length > 0) return healthy[0].url;
+
+    // Everything timed out: binding nothing would break the proxy outright, so
+    // fall back to the default and let the transport itself retry.
     return DEFAULT_WISP;
 }
-
-const wispUrl = resolveWispUrl();
 const bareUrl = (location.protocol === "https:" ? "https" : "http") + "://" + location.host + "/bare/";
 
 
@@ -156,6 +245,10 @@ export const swReady = new Promise<void>((resolve) => {
 
 const bmc = new BareMuxConnection("/baremux/worker.js");
 (async () => {
+    // Probe before binding: the wisp URL is not known until the pool has been
+    // measured, so it can no longer be resolved at module scope.
+    const wispUrl = await selectRelay();
+
     let current: string | null = null;
     try {
         current = await bmc.getTransport();
