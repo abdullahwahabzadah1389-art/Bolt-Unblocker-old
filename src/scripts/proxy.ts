@@ -6,11 +6,19 @@ import { BareMuxConnection } from '@mercuryworkshop/bare-mux';
 // local /wisp/ means all traffic exits from Render's datacenter IP, which Meta
 // (and similar) throttle. Point it at a public relay to change the exit IP.
 //
+// Endpoints checked 2026-10-13 (WS handshake, 5 attempts each):
+//   wss://wisp.freewisp.org/     5/5  101  <- current default
+//   wss://wisp.mercurywork.shop/ 5/5  101  (retired; rate-limited demo node)
+//   wss://anura.pro/               1    101
+//   wss://wisp.rhw.one/            fail 35 (SSL connect error)
+//   nebulaproxy.io/wisp/           fail    timeout
+//   wisp.pydust.cloud / wisp.coia.wtf      NXDOMAIN (do not exist)
+//
 // Override at runtime with:  localStorage.setItem('wisp-endpoint', 'wss://…')
-// Revert to local:           localStorage.removeItem('wisp-endpoint')
+// Revert to default:         localStorage.removeItem('wisp-endpoint')
 const WISP_ENDPOINT_KEY = "wisp-endpoint";
 const ACTIVE_WISP_KEY = "wisp-active-endpoint";
-const DEFAULT_WISP = "wss://wisp.mercurywork.shop/";
+const DEFAULT_WISP = "wss://wisp.freewisp.org/";
 
 function resolveWispUrl(): string {
     const stored = localStorage.getItem(WISP_ENDPOINT_KEY);
