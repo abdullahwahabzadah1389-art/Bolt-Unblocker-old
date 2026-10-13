@@ -57,7 +57,32 @@ const scramjet = new ScramjetController({
         rewriterLogs: false,
         scramitize: false,
         cleanErrors: true,
-        sourcemaps: true,
+        // ROOT CAUSE of "scramjetpushsourcemap is not defined". The engine's
+        // built-in default is `sourcemaps:!0`, and the per-request resolver
+        // (`U5` -> `l(e,t)` in scramjet.all.js) returns `flags.sourcemaps` for
+        // ANY host the siteFlags below do not match:
+        //
+        //     function l(e,t){let r=a.flags[e];
+        //       for(let r in a.siteFlags){let n=a.siteFlags[r];
+        //         if(new RegExp(r).test(t.href)&&e in n)return n[e]}
+        //       return r}                      // <- global flags.sourcemaps
+        //
+        // When it resolves true, the rewriter checks for the
+        // `$scramjet$pushsourcemap` hook; if that hook is absent in the realm,
+        // it emits a LITERAL call to the name into the script text:
+        //
+        //     `${pushsourcemapfn}([${map.join(",")}], "${tag}");`
+        //
+        // That call hits an undefined global and throws ReferenceError the
+        // moment the script loads, killing execution and freezing the splash.
+        //
+        // Per-site rules alone cannot prevent it: the Instagram web client
+        // also loads scripts from hosts our rules never match (facebook.com,
+        // *.fbcdn.net, connect.facebook.net, graph.instagram.com, …), and each
+        // of those still resolved `true`. False makes the whole branch
+        // unreachable for every host, which is what "disable sourcemapping
+        // completely" has to mean to actually stop the error.
+        sourcemaps: false,
     },
     // Per-site rewriter overrides — keyed by RegExp matched against the target
     // href. Values are Partial<ScramjetFlags>, whose complete key set is:
