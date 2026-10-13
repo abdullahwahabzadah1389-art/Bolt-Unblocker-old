@@ -7,9 +7,17 @@ import { BareMuxConnection } from '@mercuryworkshop/bare-mux';
 // (and similar) throttle. Point it at a public relay to change the exit IP.
 //
 // Relay pool, measured 2026-10-13 (raw TLS+WS handshake, 5 attempts each):
-//   wss://wisp.freewisp.org/     5/5  101  avg  749ms  <- preferred
+//   wss://my-private-relay.up.railway.app/  404 on every path  <- preferred, NOT YET MOUNTED
+//   wss://wisp.freewisp.org/     5/5  101  avg  749ms
 //   wss://wisp.mercurywork.shop/ 5/5  101  avg  966ms
 //   wss://anura.pro/             5/5  101  avg 1445ms  (922-3454ms, jittery)
+//
+// The private node RESOLVES (69.46.46.111) and the Railway app is running, but
+// it returns `404 Not Found` for /, /wisp/, /ws/, /socket and /bare/ — no wisp
+// service is mounted yet. probeRelay() therefore rejects it (a failed WS
+// handshake fires `error` -> `close` -> null) and the pool falls through to the
+// public nodes automatically. The moment a wisp server is mounted on that host,
+// it starts winning without any further change here.
 //
 // Verified DEAD, deliberately NOT in the pool:
 //   wisp.coia.wtf                ENOTFOUND (NXDOMAIN — the name does not exist)
@@ -27,9 +35,19 @@ const WISP_ENDPOINT_KEY = "wisp-endpoint";
 const ACTIVE_WISP_KEY = "wisp-active-endpoint";
 const DEFAULT_WISP = "wss://wisp.freewisp.org/";
 
-// Only endpoints that answered 101 in the measurement above. Order is the
-// preference order used when nothing healthier is already active.
+// The operator's own egress. Preferred over every public node so proxied
+// traffic exits from a dedicated IP rather than a shared public relay pool.
+// Kept as a separate constant so it can be pointed at a new host without
+// editing the ordering below.
+const PRIVATE_WISP = "wss://my-private-relay.up.railway.app/";
+
+// ARRAY ORDER IS THE PREFERENCE RANKING. Index 0 wins whenever it answers;
+// later entries are fallbacks. Note this is deliberately NOT a latency sort —
+// a private node must be preferred even when a Cloudflare-backed public relay
+// would handshakes faster, otherwise "preferred" would mean "only if fastest"
+// and the private endpoint could never be relied upon.
 const RELAY_POOL: readonly string[] = [
+    PRIVATE_WISP,
     DEFAULT_WISP,
     "wss://wisp.mercurywork.shop/",
     "wss://anura.pro/",
@@ -106,14 +124,18 @@ async function selectRelay(): Promise<string> {
         if ((await probeRelay(stored)) !== null) return stored;
     }
 
+    // Promise.all preserves input order, so `results` is already in RELAY_POOL
+    // order and filtering keeps it. We intentionally do NOT sort by latency:
+    // array position is the preference, and the pool's public entries are
+    // already written slowest-last.
     const results = await Promise.all(
         RELAY_POOL.map(async (url) => ({ url, ms: await probeRelay(url) })),
     );
-    const healthy = results
-        .filter((r): r is { url: string; ms: number } => r.ms !== null)
-        .sort((a, b) => a.ms - b.ms);
+    const healthy = results.filter(
+        (r): r is { url: string; ms: number } => r.ms !== null,
+    );
 
-    // Fastest healthy node wins.
+    // First healthy node in preference order wins.
     if (healthy.length > 0) return healthy[0].url;
 
     // Everything timed out: binding nothing would break the proxy outright, so
