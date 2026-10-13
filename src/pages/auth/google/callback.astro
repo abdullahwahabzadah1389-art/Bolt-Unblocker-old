@@ -1,0 +1,76 @@
+---
+import Layout from "../../../Layouts/Layout.astro";
+---
+
+<Layout title="Completing sign-in" proxy={false}>
+    <main
+        style="min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:.7rem;background:#0b0d12;color:#e6e8ee;font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;text-align:center;padding:2rem;"
+    >
+        <p id="bolt-auth-status" style="font-size:1.15rem;margin:0;">
+            Completing sign-in…
+        </p>
+        <p
+            id="bolt-auth-detail"
+            style="color:#8b93a5;margin:0;font-size:.9rem;max-width:34rem;line-height:1.5;"
+        >
+        </p>
+    </main>
+    <script>
+        import {
+            deliverAuthReturn,
+            injectProxyCookies,
+            type ProxyCookie,
+        } from "../../../scripts/auth-breakout";
+
+        // Both query (?code=) and implicit-hash (#access_token=) flows are read,
+        // so whichever response type the Google client is configured for works.
+        const query = new URLSearchParams(window.location.search);
+        const hash = new URLSearchParams(window.location.hash.slice(1));
+        const pick = (key: string) => query.get(key) ?? hash.get(key);
+
+        const payload = {
+            code: pick("code") ?? undefined,
+            state: pick("state") ?? undefined,
+            error: pick("error") ?? undefined,
+        };
+
+        const status = document.getElementById("bolt-auth-status");
+        const detail = document.getElementById("bolt-auth-detail");
+
+        // Cookies that the flow actually handed back on this origin.
+        //
+        // Google's OAuth redirect returns an authorization code or access token
+        // — never the provider's session cookies (SID/HSID/__Secure-1PSID and
+        // friends are HttpOnly on *.google.com and are never echoed in a
+        // redirect URL). So for Google this is legitimately empty, and no
+        // amount of client code can populate it from these parameters.
+        //
+        // It is kept non-const so a first-party provider that *does* return
+        // cookie material can push it here and have it injected into the jar.
+        const cookies: ProxyCookie[] = [];
+
+        void (async () => {
+            const injected = await injectProxyCookies(cookies);
+
+            if (status && detail) {
+                if (payload.error) {
+                    status.textContent = "Sign-in failed";
+                    detail.textContent = `Google returned: ${payload.error}`;
+                } else if (payload.code || payload.state) {
+                    status.textContent = "Authorization received";
+                    detail.textContent = injected
+                        ? `${injected} cookie(s) injected into the proxy jar.`
+                        : "No session cookies were present in the redirect — Google does not return them, so the proxied session stays signed out. This is expected.";
+                } else {
+                    status.textContent = "Nothing to complete";
+                    detail.textContent =
+                        "No authorization parameters were found in this URL.";
+                }
+            }
+
+            // Handed back over the same-origin channel; fires regardless of the
+            // message above so callers can act on `code` / `error`.
+            deliverAuthReturn(payload);
+        })();
+    </script>
+</Layout>

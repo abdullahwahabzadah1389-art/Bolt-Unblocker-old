@@ -1,7 +1,28 @@
 import { BareMuxConnection } from '@mercuryworkshop/bare-mux';
 
-// temp: change default to lib
-const wispUrl = (location.protocol === "https:" ? "wss" : "ws") + "://" + location.host + "/wisp/";
+// ── Outbound relay ────────────────────────────────────────────────────────
+// Every proxied fetch is performed by the *wisp server*, not by this page, so
+// this value determines the source IP the target site sees. Keeping it on the
+// local /wisp/ means all traffic exits from Render's datacenter IP, which Meta
+// (and similar) throttle. Point it at a public relay to change the exit IP.
+//
+// Override at runtime with:  localStorage.setItem('wisp-endpoint', 'wss://…')
+// Revert to local:           localStorage.removeItem('wisp-endpoint')
+const WISP_ENDPOINT_KEY = "wisp-endpoint";
+const ACTIVE_WISP_KEY = "wisp-active-endpoint";
+const DEFAULT_WISP = "wss://wisp.mercurywork.shop/";
+
+function resolveWispUrl(): string {
+    const stored = localStorage.getItem(WISP_ENDPOINT_KEY);
+    if (stored) return stored;
+    // A wss:// endpoint is unreachable from an insecure origin.
+    if (location.protocol === "http:") {
+        return "ws://" + location.host + "/wisp/";
+    }
+    return DEFAULT_WISP;
+}
+
+const wispUrl = resolveWispUrl();
 const bareUrl = (location.protocol === "https:" ? "https" : "http") + "://" + location.host + "/bare/";
 
 
@@ -30,8 +51,24 @@ const scramjet = new ScramjetController({
         cleanErrors: true,
         sourcemaps: true,
     },
+    // Per-site rewriter overrides — keyed by RegExp matched against the target
+    // href. Instagram gets the lightest-touch profile the engine offers.
+    //
+    // Note what this is NOT: neither Scramjet nor Ultraviolet wraps
+    // window.crypto or crypto.subtle (there is no crypto hook module), so no
+    // encryption shim is needed or appropriate here. These flags only reduce
+    // the rewriter's own instrumentation on the page.
     siteFlags: {
-
+        '^https?://([a-z0-9-]+\\.)?instagram\\.com(/|$)': {
+            sourcemaps: false,
+            captureErrors: false,
+            strictRewrites: false,
+        },
+        '^https?://([a-z0-9-]+\\.)?cdninstagram\\.com(/|$)': {
+            sourcemaps: false,
+            captureErrors: false,
+            strictRewrites: false,
+        },
     },
     prefix: '/$/'
 });
@@ -53,8 +90,21 @@ export const swReady = new Promise<void>((resolve) => {
 
 const bmc = new BareMuxConnection("/baremux/worker.js");
 (async () => {
-    if (!await bmc.getTransport()) {
+    let current: string | null = null;
+    try {
+        current = await bmc.getTransport();
+    } catch {
+        /* no transport bound yet */
+    }
+
+    // bare-mux persists the transport, so `setTransport` must be called again
+    // whenever the relay changes — otherwise an existing session keeps its old
+    // exit IP and this edit silently never takes effect.
+    const relayChanged = localStorage.getItem(ACTIVE_WISP_KEY) !== wispUrl;
+
+    if (!current || relayChanged) {
         await bmc.setTransport(transport, [{ wisp: wispUrl }]);
+        localStorage.setItem(ACTIVE_WISP_KEY, wispUrl);
     }
 })();
 
